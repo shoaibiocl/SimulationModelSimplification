@@ -1,0 +1,605 @@
+import salabim as sim
+import random
+import numpy as np
+import pandas as pd
+from timeit import default_timer as timer
+
+""" PHC operational model at minutes time scale. 
+From the class Main OPD arrivals and admin work arrival are generated.
+OPD runs for 6 hours in a day followed by 2 hours of admin work for doctors.
+"""
+
+
+class Main(sim.Component):
+    global OPD_iat
+    global fail_count
+    global ncd_time
+
+    env = sim.Environment()
+
+    No_of_shifts = 0  # tracks number of shifts completed during the simulation time
+    No_of_days = 0
+    staff_nurse_del = 0
+    staff_nurse_ANC = 0
+    staff_nurse_IPD = 0
+    p_count = 0
+    NT_list = []  # to store nurse time
+    fail_count = 0
+
+    warm_up = 180 * 24 * 60
+
+    def process(self):
+
+        global ncd_time
+
+        self.shift = 0
+        self.sim_time = 0  # local variable defined for dividing each day into shifts
+        self.z = 0
+        self.admin_count = 0
+        k = 0
+
+        while self.z % 3 == 0:  # condition to run simulation for 8 hour shifts
+            Main.No_of_days += 1  # class variable to track number of days passed
+            while self.sim_time < 360:  # from morning 8 am to afternoon 2 pm (in minutes)
+
+                Main.p_count += 1
+                OPD_PatientGenerator()
+                patient_ia_time = sim.Exponential(OPD_iat).sample()  # Patient inter arrival time
+                yield self.hold(patient_ia_time)
+                self.sim_time += patient_ia_time
+
+            while 360 <= self.sim_time < 480:  
+                k = int(sim.Normal(100, 20).bounded_sample(60, 140))
+               
+                yield self.hold(120)
+                self.sim_time = 481
+            self.z += 3
+            self.sim_time = 0
+            Main.No_of_shifts += 3
+            yield self.hold(960)  # holds simulation for 2 shifts
+
+
+class OPD_PatientGenerator(sim.Component):
+    """This is called from main. It assigns attributes to the patients based on which their flow is determined."""
+    OPD_List = {}  # log of all the patient stored here
+    patient_count = 0  # total OPD patients
+    patient_count_1 = 0  # total OPD patients with single visit
+    patient_count_2 = 0  # total OPD patients with single visit
+    patient_count_3 = 0  # total OPD patients with single visit
+
+    def __init__(self):  # calls process method every time OPD patient class is called
+        self.dic = {}  # local dictionary for temporarily   storing generated patients
+        # with attributes
+        OPD_PatientGenerator.patient_count += 1
+        self.time_of_visit = [[0], [0], [0]]  # initializing for assigning time of visits
+        self.registration_time = round(env.now())  # registration time is the current simulation time
+        self.id = OPD_PatientGenerator.patient_count  # patient count is patient id
+        self.age_random = random.randint(0, 1000)  # assigning age to population based on census 2011 gurgaon
+        if self.age_random <= 578:
+            self.age = random.randint(0, 30)
+        else:
+            self.age = random.randint(31, 100)
+        self.sex = random.choice(["male", "female"])  # Equal probability of male and female patient
+        self.type_of_patient = random.choice(["True", "False"])  # Considering nearly half of all the patients
+        # require lab tests
+        self.visits_assigned = random.randint(1, 10)  # assigning number of visits visits
+        self.dic = {"ID": self.id, "Age": self.age, "Sex": self.sex, "Lab": self.type_of_patient,
+                    "Registration_Time": self.registration_time, "No_of_visits": self.visits_assigned,
+                    "Time_of_visit": self.time_of_visit}
+        OPD_PatientGenerator.OPD_List[OPD_PatientGenerator.patient_count] = self.dic
+        self.process()
+
+    def process(self):
+
+        x = OPD_PatientGenerator.OPD_List[OPD_PatientGenerator.patient_count]["No_of_visits"]
+        """x checks for the number of visits a patient will make."""
+
+        if x == 2 or x == 3:  # 20 % patients assigned 2 visits
+            OPD_PatientGenerator.patient_count_2 += 1
+            y = random.randint(3 * 24 * 60, 8 * 24 * 60)  # patient can visit between 3 and 8 days
+            OPD_PatientGenerator.OPD_List[OPD_PatientGenerator.patient_count]["Time_of_visit"][0] = \
+                round(self.registration_time)
+            # calling patient class for 1st visit
+            Patient()
+            OPD_PatientGenerator.OPD_List[OPD_PatientGenerator.patient_count]["Time_of_visit"][1] \
+                = round(self.registration_time + y)
+            # scheduling patient class for 2nd visit
+            Patient(at=OPD_PatientGenerator.OPD_List[OPD_PatientGenerator.patient_count]["Time_of_visit"][1])
+            OPD_PatientGenerator.OPD_List[OPD_PatientGenerator.patient_count]["Time_of_visit"][2] = float("inf")
+
+        elif x == 1:  # 10% patients assigned 3 visits
+            OPD_PatientGenerator.patient_count_3 += 1
+            y = random.randint(3 * 24 * 60, 8 * 24 * 60)  # patient can visit between 3 and 8 days for 2nd visit
+            OPD_PatientGenerator.OPD_List[OPD_PatientGenerator.patient_count]["Time_of_visit"][0] = \
+                round(self.registration_time)
+            Patient()
+            OPD_PatientGenerator.OPD_List[OPD_PatientGenerator.patient_count]["Time_of_visit"][1] = \
+                round(self.registration_time + y)
+            Patient(at=OPD_PatientGenerator.OPD_List[OPD_PatientGenerator.patient_count]["Time_of_visit"][1])
+            OPD_PatientGenerator.OPD_List[OPD_PatientGenerator.patient_count]["Time_of_visit"][2] = \
+                round(self.registration_time + 2 * y)  # patient can visit between 3 and 8 days after 2nd visit
+            Patient(at=OPD_PatientGenerator.OPD_List[OPD_PatientGenerator.patient_count]["Time_of_visit"][2])
+
+        else:
+            OPD_PatientGenerator.patient_count_1 += 1  # patients with only 1 visit
+            OPD_PatientGenerator.OPD_List[OPD_PatientGenerator.patient_count]["Time_of_visit"][0] = \
+                round(self.registration_time)
+            OPD_PatientGenerator.OPD_List[OPD_PatientGenerator.patient_count]["Time_of_visit"][1] = float("inf")
+            OPD_PatientGenerator.OPD_List[OPD_PatientGenerator.patient_count]["Time_of_visit"][2] = float("inf")
+            Patient()
+
+
+"""IPD patients are generated using a separate generator. Since IPD patients are emergency cases, hence they can
+come at time during a day.
+"""
+
+
+class IPD_PatientGenerator(sim.Component):
+    global IPD_iat
+    IPD_List = {}  # log of all the IPD patients stored here
+    patient_count = 0  # log of patients in each replication
+
+    def process(self):
+        global M
+        M = 0
+        while True:
+            IPD_PatientGenerator.patient_count += 1
+            self.registration_time = env.now()
+            self.id = IPD_PatientGenerator.patient_count
+            self.age = round(random.normalvariate(35, 8))
+            self.sex = random.choice(["Male", "Female"])
+            IPD_PatientGenerator.IPD_List[self.id] = [self.registration_time, self.id, self.age, self.sex]
+            if 0 < (self.registration_time - N * 1440) < 480:
+                IPD_with_doc(urgent=True)
+            else:
+                IPD_no_doc(urgent=True)
+            self.hold_time_1 = sim.Exponential(IPD_iat).sample()
+            yield self.hold(self.hold_time_1)
+            M = int(env.now() / 1440)
+
+
+"""This class models the delivery patients in a PHC. The patient arrival is divided into two parts: 1) During OPD hours
+  and 2) during non OPD hours. It is divided into OPD and non OPD hours. The delivery patient arrival can happen
+  anytime during a day. A delivery patient gets priority over others and they are treated as urgent. If arrival occurs
+   during the OPD hours then the Delivery_with_doc class is instantiated otherwise the other one without the doctor"""
+
+
+class Delivery(sim.Component):
+    global delivery_iat
+    global N
+
+    Delivery_list = {}
+    Delivery_count = 0
+    p_count = 0  # to maintain the log of patients in each replication
+
+    N = 0
+
+    def process(self):
+        global N
+
+        while True:
+
+            Delivery.p_count += 1
+            Delivery.Delivery_count += 1
+            self.registration_time = round(env.now())
+            self.id = Delivery.Delivery_count
+            self.sex = "Female"
+            Delivery.Delivery_list[self.id] = [self.registration_time, self.id, self.sex]
+            if 0 < (self.registration_time - N * 1440) < 480:
+                Delivery_with_doctor(urgent=True)  # sets priority
+            else:
+                Delivery_no_doc(urgent=True)
+            self.hold_time = sim.Exponential(delivery_iat).sample()
+            yield self.hold(self.hold_time)
+            N = int(env.now() / 1440)
+
+
+"""Antenatal care generator. Pregnant women make four visits to the facility for routine checkup and counselling.
+Staff nurses do checkup and maintain the log. ANC visits only happen during the OPD hours. It is assumed (WHO Guidelines)
+that a pregnant woman will make 4 visits to the PHC -after the first visit- second, third and fourth visits are scheduled
+in next 14, 6 and 6 weeks respectively"""
+
+
+class ANC(sim.Component):
+    global ANC_iat
+
+    env = sim.Environment()
+    No_of_shifts = 0  # tracks number of shifts completed during the simulation time
+    No_of_days = 0
+    ANC_List = {}
+    anc_count = 0
+    ANC_p_count = 0
+
+    def process(self):
+
+        sim_time = 0  # local variable defined for dividing each day into shits
+        z = 0
+        k = 0
+        while z % 3 == 0:  # condition to run simulation for 8 hour shifts
+            ANC.No_of_days += 1  # class variable to track number of days passed
+            while sim_time < 480:  # from morning 8 am to afternoon 4 pm (in minutes)
+                ANC.anc_count += 1  # counts overall patients throghout simulation
+                ANC.ANC_p_count += 1  # counts patients in each replication
+                id = ANC.anc_count
+                age = 223
+                day_of_registration = ANC.No_of_days
+                visit = 1
+                x0 = round(env.now())
+                x1 = x0 + 14 * 7 * 24 * 60
+                x2 = x0 + 20 * 7 * 24 * 60
+                x3 = x0 + 24 * 7 * 24 * 60
+                scheduled_visits = [[0], [0], [0], [0]]
+                scheduled_visits[0] = x0
+                scheduled_visits[1] = x1
+                scheduled_visits[2] = x2
+                scheduled_visits[3] = x3
+                dic = {"ID": id, "Age": age, "Visit Number": visit, "Registration day": day_of_registration,
+                       "Scheduled Visit": scheduled_visits}
+                ANC.ANC_List[id] = dic
+                ANC_Checkup()
+                ANC_followup(at=ANC.ANC_List[id]["Scheduled Visit"][1])
+                ANC_followup(at=ANC.ANC_List[id]["Scheduled Visit"][2])
+                ANC_followup(at=ANC.ANC_List[id]["Scheduled Visit"][3])
+                hold_time = sim.Exponential(ANC_iat).sample()
+                yield self.hold(hold_time)
+                sim_time += hold_time
+            z += 3
+            sim_time = 0
+            ANC.No_of_shifts += 3
+            yield self.hold(960)  # holds simulation for 2 shifts
+
+
+class ANC_Checkup(sim.Component):
+    anc_checkup_count = 0
+
+    def process(self):
+        ANC_Checkup.anc_checkup_count += 1
+        self.enter(waitingline_staff_nurse)
+        yield self.request(staff_nurse)
+        self.leave(waitingline_staff_nurse)
+        z0 = env.now()
+        temp = sim.Triangular(8, 20.6, 12.3).sample()
+        yield self.hold(temp)  # time taken from a study on ANC visits in Tanzania
+        self.release(staff_nurse)
+        self.enter(waitingline_lab)
+        yield self.request(lab)
+        self.leave(waitingline_lab)
+
+        yield self.hold(sim.Normal(5, 1).bounded_sample())
+
+
+class ANC_followup(sim.Component):
+    followup_count = 0
+
+    def process(self):
+
+        for key in ANC.ANC_List:  # for identifying and updating ANC visit number
+            x0 = env.now()
+            x1 = ANC.ANC_List[key]["Scheduled Visit"][1]
+            x2 = ANC.ANC_List[key]["Scheduled Visit"][2]
+            x3 = ANC.ANC_List[key]["Scheduled Visit"][3]
+            if 0 <= (x1 - x0) < 481:
+                ANC.ANC_List[key]["Scheduled Visit"][1] = float("inf")
+                ANC.ANC_List[key]["Visit Number"] = 2
+            elif 0 <= (x2 - x0) < 481:
+                ANC.ANC_List[key]["Scheduled Visit"][2] = float("inf")
+                ANC.ANC_List[key]["Visit Number"] = 3
+            elif 0 <= (x3 - x0) < 481:
+                ANC.ANC_List[key]["Scheduled Visit"][3] = float("inf")
+                ANC.ANC_List[key]["Visit Number"] = 4
+
+        ANC_followup.followup_count += 1
+        self.enter(waitingline_staff_nurse)
+        yield self.request(staff_nurse)
+        z0 = env.now()
+        self.leave(waitingline_staff_nurse)  # calculating staff nurse occupancy
+        temp = sim.Triangular(3.33, 13.16, 6.50).sample()
+        yield self.hold(temp)
+        self.release(staff_nurse)
+
+        self.enter(waitingline_lab)
+        yield self.request(lab)
+        self.leave(waitingline_lab)
+
+        yield self.hold(sim.Normal(3.456, .823).bounded_sample(2))
+
+
+class Patient(sim.Component):
+    global an_list
+    global pharm_mean
+    global pharm_sd
+    global ncd_time
+
+    thirty_plus_patients = 0
+    OPD_visits = 0
+    doc_service_time = []
+    doctor_OPD_time = 0
+    NCD_Nurse_time_list = []
+    Lab_time = []
+    lab_time = 0
+    pharmacist_time = []
+    NCD_Nusre_1_time = 0
+    lab_patients = 0
+
+    def process(self):
+        """ Includes number of times patients go to OPD, it includes - single, double and triple visits patients.
+        Can be less than the actual visits because some visits are scheduled in future after the simulation time. """
+
+        global ncd_time
+        Patient.OPD_visits += 1
+        """ Includes number of times patients go to OPD, it includes - single, double and triple visits patients.
+        Can be less than the actual visits because some visits are scheduled in future after the simulation time. """
+
+        if OPD_PatientGenerator.OPD_List[OPD_PatientGenerator.patient_count][
+            "Age"] >= 30:  # patients's age>30, check BP
+            Patient.thirty_plus_patients += 1
+            yield self.request((NCD_Nurse, 1))  # requests one staff nurse
+            yield self.hold(sim.Uniform(2, 5, 'minutes').sample())  # bounded variable-cannot take negative values
+            self.release()
+        self.enter(waitingline_OPD)
+        yield self.request((doctor, 1))
+        self.leave(waitingline_OPD)
+        consultation_time = sim.Normal(mean, sd, 'minutes').bounded_sample(0.3)
+        yield self.hold(consultation_time)
+        self.release()
+        # for lab visits
+        if OPD_PatientGenerator.OPD_List[OPD_PatientGenerator.patient_count][
+            "Lab"] == "True":  # checks if lab test is required
+            Patient.lab_patients += 1
+            self.enter(waitingline_lab)
+            yield self.request(lab)
+            self.leave(waitingline_lab)
+            f = round(sim.Normal(3.456, .823).bounded_sample(2), 2)
+            yield self.hold(f)
+            self.release()
+
+        self.enter(waitingline_pharmacy)
+        yield self.request(pharmacist)
+        self.leave(waitingline_pharmacy)
+        yield self.hold(sim.Normal(pharm_mean, pharm_sd).bounded_sample(.67))  #
+        self.release()
+        yield self.hold(sim.Normal(6, 1).bounded_sample(.67))
+
+
+class IPD_with_doc(sim.Component):
+
+    def process(self):
+        global fail_count
+        global bed_time
+        global bed
+
+        self.enter_at_head(waitingline_OPD)
+        yield self.request(doctor)
+        doc_time = round(sim.Uniform(10, 30, 'minutes').sample())
+        self.leave(waitingline_OPD)
+        yield self.hold(doc_time)
+        self.release(doctor)
+        yield self.request(staff_nurse)
+        temp = sim.Uniform(30, 60, 'minutes').sample()
+        yield self.hold(temp)
+        self.release(staff_nurse)
+        yield self.request(bed)
+        y = sim.Triangular(60, 360, 180, 'minutes').bounded_sample(0)
+        yield self.hold(y)
+        self.release(bed)
+
+
+class IPD_no_doc(sim.Component):  # during night when no doctor is available
+
+    global bed
+
+    def process(self):
+        yield self.request(staff_nurse)
+        z0 = env.now()
+        temp = sim.Uniform(30, 60, 'minutes').sample()
+        yield self.hold(temp)
+        self.release(staff_nurse)
+        yield self.request(bed)
+        y = (sim.Triangular(60, 360, 180, 'minutes').sample())
+        yield self.hold(y)
+        self.release(bed)
+
+
+class Delivery_with_doctor(sim.Component):
+    doc_delivery_time = 0
+    del_OPD = 0
+
+    def process(self):
+
+        Delivery_with_doctor.del_OPD += 1
+        self.enter_at_head(waitingline_OPD)
+        yield self.request((doctor, 1), fail_delay=20)
+        doc_time = round(sim.Uniform(30, 60, 'minutes').sample(), 2)
+
+        if self.failed():
+            self.leave(waitingline_OPD)
+            yield self.request(staff_nurse)
+            temp = sim.Uniform(120, 240, 'minutes').sample()
+            yield self.hold(temp)
+            self.release(staff_nurse)
+            yield self.request(doctor)
+            yield self.hold(doc_time)
+
+            self.release(doctor)
+            yield self.request(delivery_bed, fail_delay=120)
+            if self.failed():
+                Delivery_with_doctor.del_OPD -= 1
+            else:
+                yield self.hold(sim.Uniform(6 * 60, 10 * 60, 'minutes').sample())
+                self.release(delivery_bed)
+                yield self.request(bed)
+                y = sim.Uniform(240, 1440, 'minutes').sample()
+                yield self.hold(y)
+                self.release(bed)
+        else:
+            self.leave(waitingline_OPD)
+            yield self.hold(doc_time)
+            self.release(doctor)
+            yield self.request(staff_nurse)
+            temp = sim.Uniform(120, 240, 'minutes').sample()
+            yield self.hold(temp)
+            self.release(staff_nurse)
+            yield self.request(delivery_bed)
+            yield self.hold(sim.Uniform(6 * 60, 10 * 60, 'minutes').sample())
+            self.release(delivery_bed)
+            yield self.request(bed)
+            y = sim.Uniform(240, 1440, 'minutes').sample()
+            yield self.hold(y)  # holding patient for min 4 hours
+            # to 48 hours
+            self.release(bed)
+
+
+class Delivery_no_doc(sim.Component):  # during night when no doctor is available
+
+    del_after_OPD = 0
+
+    def process(self):
+
+        yield self.request(staff_nurse)
+        temp = sim.Uniform(120, 240, 'minutes').sample()
+        yield self.hold(temp)
+        self.release(staff_nurse)
+        yield self.request(delivery_bed, fail_delay=120)
+        if self.failed():
+            pass
+        else:
+            yield self.hold(sim.Uniform(6 * 60, 10 * 60, 'minutes').sample())
+            self.release(delivery_bed)
+            yield self.request(bed)
+            yield self.hold(sim.Uniform(240, 1440, 'minutes').bounded_sample(0))
+            self.release(bed)
+
+
+def main():
+    # defining simulation input parameters
+    global OPD_iat
+    global delivery_iat
+    global IPD_iat
+    global ANC_iat
+    global mean
+    global sd
+    global pharm_mean
+    global pharm_sd
+    global days
+    global shifts
+    global hours
+    global doc_cap
+    global staff_nurse_cap
+    global NCD_nurse_cap
+    global pharmacist_cap
+    global lab_cap
+    global ANC_nurse
+
+    # defining salabim resources
+    global env
+    global doctor
+    global staff_nurse
+    global NCD_Nurse
+    global pharmacist
+    global lab
+    global bed
+    global delivery_bed
+
+    # Defining salabim queues
+    global waitingline_OPD
+    global waitingline_staff_nurse
+    global waitingline_pharmacy
+    global waitingline_lab
+
+    OPD_iat = 4
+    delivery_iat = 1440  # inter-arrival delivery patient time
+    IPD_iat = 2880/55  # inter-arrival IPD patient time
+    ANC_iat = 1440  # inter-arrival ANC patient time
+    mean = 5  # consultation time mean
+    sd = 1 # consultation time sd
+    pharm_mean = 2.083
+    pharm_sd = 0.72
+    days = 365
+    shifts = 3
+    hours = 8
+    doc_cap = 2  # number of doctors
+    staff_nurse_cap = 3  # number of nurses
+    NCD_nurse_cap = 1  # number of NCD nurses
+    pharmacist_cap = 1  # number of pharmacists
+    lab_cap = 1  # number of lab technicians
+
+    # for model simplification
+    replication = 30
+    replication_time = np.zeros(replication)
+    patient_count = np.zeros(replication)
+    doctor_utilisation = np.zeros(replication)
+    bed_utilisation = np.zeros(replication)
+    staff_nurse_utilisation = np.zeros(replication)
+    pharmacist_utilisation = np.zeros(replication)
+    lab_utilisation = np.zeros(replication)
+    ncd_nurse_utilisation = np.zeros(replication)
+    opd_total_count = np.zeros(replication)
+    ncd_count = np.zeros(replication)
+    lab_count = np.zeros(replication)
+
+    for x in range(0, replication):
+        temp_start_time = timer()
+        IPD_PatientGenerator.patient_count = 0
+        ANC_Checkup.anc_checkup_count = 0
+        Patient.OPD_visits = 0
+        Patient.lab_patients = 0
+        Patient.thirty_plus_patients = 0
+        env = sim.Environment(trace=False, random_seed='', time_unit='minutes')
+        NCD_Nurse = sim.Resource("Staff nurse 1", capacity=NCD_nurse_cap)
+        staff_nurse = sim.Resource("Staff nurse", capacity=staff_nurse_cap)
+        doctor = sim.Resource('doctor', capacity=doc_cap)
+        lab = sim.Resource('Lab', capacity=lab_cap)
+        pharmacist = sim.Resource("Pharmacy", capacity=pharmacist_cap)
+        bed = sim.Resource("Bed", capacity=6)
+        delivery_bed = sim.Resource("Del bed", capacity=1)
+        Main(name='')
+        IPD_PatientGenerator(name="IPD_Patient")
+        Delivery(name="Delivery Patient")
+        ANC(name="ANC Patients")
+        waitingline_staff_nurse = sim.Queue("waitingline_staff_nurse 1")
+        waitingline_OPD = sim.Queue('waitingline_OPD')
+        waitingline_lab = sim.Queue("waitingline_lab")
+        waitingline_pharmacy = sim.Queue("waitingline_pharmacy")
+
+        """Actual simulation"""
+        env.run(till=1440 * 365 * 2)  # minutes in a day * days in a year * years
+        print("Replications done", x)
+        temp_end_time = timer()
+        print("Replication time = ", temp_end_time - temp_start_time)
+        replication_time[x] = round(temp_end_time - temp_start_time, 2)
+        patient_count[x] = IPD_PatientGenerator.patient_count
+        doctor_utilisation[x] = doctor.occupancy.mean()*3
+        staff_nurse_utilisation[x] = staff_nurse.occupancy.mean()
+        bed_utilisation[x] = bed.occupancy.mean()
+        pharmacist_utilisation[x] = pharmacist.occupancy.mean()*3
+        lab_utilisation[x] = lab.occupancy.mean()*3
+        ncd_nurse_utilisation[x] = NCD_Nurse.occupancy.mean()
+        opd_total_count[x] = Patient.OPD_visits
+        ncd_count[x] = Patient.thirty_plus_patients
+        lab_count[x] = Patient.lab_patients
+        print("NCD patient count ", Patient.thirty_plus_patients)
+        print("Lab patient count ", Patient.lab_patients)
+        print("Total OPD patient count ", Patient.OPD_visits)
+
+    print("Average replication time : ", np.mean(replication_time))
+    df = pd.DataFrame({'Replication Time': replication_time,
+                       "IPD patients": patient_count,
+                       "doctor utilisation": doctor_utilisation,
+                       "staff nurse utilistaion": staff_nurse_utilisation,
+                       "IPD bed utilisation": bed_utilisation,
+                       "pharmacist utilisation": pharmacist_utilisation,
+                       "lab utilisation": lab_utilisation,
+                       "NCD utilisation": ncd_nurse_utilisation,
+                       "OPD total patient count": opd_total_count,
+                       "NCD patient count": ncd_count,
+                       "Lab patient count": lab_count
+
+                       })
+    df.to_excel("OutputFile_ParentOPD.xlsx", index=False)
+
+
+if __name__ == '__main__':
+    sim.yieldless(False)
+    main()
+
+
