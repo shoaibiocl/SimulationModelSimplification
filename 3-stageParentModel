@@ -1,0 +1,226 @@
+""" 3stage tandem queuing system - also referred to as a parent model - used in the validation experiments. """
+
+import salabim as sim
+import datetime
+import pandas as pd
+import numpy as np
+
+
+class PatientGenerator(sim.Component):
+
+    def process(self):
+        global warmup
+
+        while True:
+            Patient()
+            iat = np.random.exponential(2.3)
+            yield self.hold(iat)
+
+
+class Patient(sim.Component):
+
+    def process(self):
+        global warmup
+        global doctor
+        global doctor2
+        global doctor3
+        global doctor4
+        global wait_q
+        global wait_q2
+        global wait_q3
+        global wait_q4
+        global count_1
+        global count_2
+        global count_3
+        global count_4
+
+        st = 2
+        #st3 = 2
+        #st4 = 2
+        p = np.random.exponential(st)
+        p2 = np.random.exponential(st)
+        p3 = np.random.triangular(1, 3, 5)
+        p4 = np.random.uniform(2, 5)
+        if env.now() < warmup:
+            self.enter(wait_q)
+            yield self.request(doctor)
+            self.leave(wait_q)
+            yield self.hold(p)
+            self.release(doctor)
+            # 2nd doctor
+            self.enter(wait_q2)
+            yield self.request(doctor2)
+            self.leave(wait_q2)
+            yield self.hold(p2)
+            self.release(doctor2)
+            # 3rd doctor
+
+            y = np.random.randint(0, 10)
+            if y <= 3:
+                self.enter(wait_q3)
+                yield self.request(doctor3)
+                self.leave(wait_q3)
+                yield self.hold(p3)
+                self.release(doctor3)
+            else:
+                # 4th doctor
+                self.enter(wait_q4)
+                yield self.request(doctor4)
+                self.leave(wait_q4)
+                yield self.hold(p4)
+                self.release(doctor4)
+        else:
+            self.enter(wait_q)
+            yield self.request(doctor)
+            self.leave(wait_q)
+            yield self.hold(p)
+            self.release(doctor)
+            count_1 += 1
+            # 2nd doctor
+            count_2 += 1
+            self.enter(wait_q2)
+            yield self.request(doctor2)
+            self.leave(wait_q2)
+            yield self.hold(p2)
+            self.release(doctor2)
+            # 3rd doctor
+            y = np.random.randint(0, 10)
+            if y < 6:
+                count_3 += 1
+                self.enter(wait_q3)
+                yield self.request(doctor3)
+                self.leave(wait_q3)
+
+                yield self.hold(p3)
+                self.release(doctor3)
+            else:
+                # 4th doctor
+                count_4 += 1
+                self.enter(wait_q4)
+                yield self.request(doctor4)
+                self.leave(wait_q4)
+                yield self.hold(p4)
+                self.release(doctor4)
+
+
+def main():
+
+    # defining simulation parameters
+    global env
+    global doctor
+    global warmup
+    # system generated outputs
+
+    global sys_doc_util
+    global sys_doc_util2
+    global sys_doc_util3
+    global sys_doc_util4
+
+    sys_doc_util = []   # average doc occupancy
+    sys_doc_util2 = []  # average doc occupancy
+    sys_doc_util3 = []  # average doc occupancy
+    sys_doc_util4 = []  # average doc occupancy
+
+    global doctor
+    global doctor2
+    global doctor3
+    global doctor4
+    global wait_q
+    global wait_q2
+    global wait_q3
+    global wait_q4
+
+    global arrival_1
+    global arrival_2
+    global arrival_3
+    global arrival_4
+    global count_1
+    global count_2
+    global count_3
+    global count_4
+
+
+    arrival_1 = []
+    arrival_2 = []
+    arrival_3 = []
+    arrival_4 = []
+
+    global run_time
+    run_time = []
+
+    replication = 30
+    warmup = 100 * 1440
+    simtime = 2 * 365 * 1440
+
+    for _ in range(0, replication):
+
+        count_1 = 0
+        count_2 = 0
+        count_3 = 0
+        count_4 = 0
+
+        env = sim.Environment(trace=False, time_unit='minutes', random_seed="")
+        doctor = sim.Resource("Doctor 1")
+        doctor2 = sim.Resource("Doctor 2")
+        doctor3 = sim.Resource("Doctor 3")
+        doctor4 = sim.Resource("Doctor 4")
+        wait_q = sim.Queue(name="Queue 1")
+        wait_q2 = sim.Queue(name="Queue 2")
+        wait_q3 = sim.Queue(name="Queue 3")
+        wait_q4 = sim.Queue(name="Queue 4")
+
+        PatientGenerator()
+        env.run(warmup)
+        a1 = datetime.datetime.now()
+        env.run(simtime)
+        b = datetime.datetime.now()
+        time_diff = b - a1
+        seconds = time_diff.total_seconds()
+        run_time.append(seconds)
+        # Doctor 1
+        sys_doc_util.append(doctor.occupancy[warmup:(warmup+simtime)].mean())
+        #print(sys_doc_util)
+        arrival_1.append(count_1)
+        #wait_q.length_of_stay[warmup:(warmup + simtime)].number_of_entries()
+        #print(arrival_1)
+        # Doctor 2
+        sys_doc_util2.append(doctor2.occupancy[warmup:(warmup+simtime)].mean())
+        arrival_2.append(count_2)
+            #wait_q2.length_of_stay[warmup:(warmup + simtime)].number_of_entries()
+        # Doctor 3
+        sys_doc_util3.append(doctor3.occupancy[warmup:(warmup+simtime)].mean())
+        arrival_3.append(count_3)  #wait_q3.length_of_stay[warmup:(warmup + simtime)].number_of_entries()
+        # Doctor 4
+        sys_doc_util4.append(doctor4.occupancy[warmup:(warmup+simtime)].mean())
+        arrival_4.append(count_4)
+        print("Number counted", count_4)
+        print("Number from system", wait_q4.length_of_stay[warmup:(warmup + simtime)].number_of_entries())
+        print("Replications completed", _ + 1)
+        a2 = datetime.datetime.now()
+        print("Replication time: ", a2-a1)
+
+
+if __name__ == '__main__':
+    a1 = datetime.datetime.now()
+    sim.yieldless(False)
+    main()
+    b = datetime.datetime.now()
+    print("Total elapsed time: ", (b - a1))
+
+
+df1 = pd.DataFrame({"Doc 1 utilization": np.array(sys_doc_util),
+                    "Doc 2 utilization": np.array(sys_doc_util2),
+                    "Doc 3 utilization": np.array(sys_doc_util3),
+                    "Doc 4 utilization": np.array(sys_doc_util4),
+                    "Doc 1 arr": np.array(arrival_1),
+                    "Doc 2 arr": np.array(arrival_2),
+                    "Doc 3 arr": np.array(arrival_3),
+                    "Doc 4 arr": np.array(arrival_4),
+                    "Time": np.array(run_time)
+                    })
+
+tyu = pd.ExcelWriter('MMparentsystem.xlsx', engine="xlsxwriter")
+df1.to_excel(tyu, sheet_name="CHC1")
+
+tyu.save()
+
